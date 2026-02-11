@@ -5,8 +5,8 @@ import { checkBackendHealth } from '../services/api';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 
 const Login = () => {
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('admin123');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [backendStatus, setBackendStatus] = useState('checking');
@@ -176,14 +176,7 @@ const Login = () => {
             </button>
           </div>
 
-          <div className="text-center">
-            <p className="text-sm text-gray-600">
-              Default credentials: admin / admin123
-            </p>
-            <p className="text-xs text-gray-500 mt-1">
-              The default admin user is created automatically when the backend starts
-            </p>
-          </div>
+          
         </form>
 
         {/* Debug information */}
