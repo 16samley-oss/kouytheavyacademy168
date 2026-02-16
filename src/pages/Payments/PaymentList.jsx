@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+// pages/Payments/PaymentList.js - WITH INFINITE SCROLLING
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import AdminLayout from '../../components/Layout/AdminLayout';
 import LoadingSpinner from '../../components/Common/LoadingSpinner';
 import Alert from '../../components/Common/Alert';
@@ -9,14 +10,19 @@ import {
   verifyBulkPayments,
   exportPayments,
   getMockPayments,
-  checkPaymentsHealth 
+  checkPaymentsHealth,
+  testAdminPaymentsEndpoint,
+  getPaginatedPayments
 } from '../../services/paymentService';
+import api from '../../services/api';
 import { CSVLink } from 'react-csv';
 import Swal from 'sweetalert2';
 
 const PaymentList = () => {
-  const [payments, setPayments] = useState([]);
+  const [allPayments, setAllPayments] = useState([]); // Store all fetched payments
+  const [displayedPayments, setDisplayedPayments] = useState([]); // Payments to show (paginated)
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -25,6 +31,26 @@ const PaymentList = () => {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [csvData, setCsvData] = useState([]);
   const [useMockData, setUseMockData] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [page, setPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const pageSize = 20; // Load 20 at a time
+  
+  const observerRef = useRef();
+  const loaderRef = useCallback(node => {
+    if (loading || loadingMore) return;
+    if (observerRef.current) observerRef.current.disconnect();
+    
+    observerRef.current = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && hasMore) {
+        loadMorePayments();
+      }
+    });
+    
+    if (node) observerRef.current.observe(node);
+  }, [loading, loadingMore, hasMore]);
+
   const [stats, setStats] = useState({
     total: 0,
     totalRevenue: 0,
@@ -38,18 +64,29 @@ const PaymentList = () => {
     initializePayments();
   }, []);
 
+  // Update displayed payments when filter changes
+  useEffect(() => {
+    if (allPayments.length > 0) {
+      filterAndDisplayPayments();
+    }
+  }, [filter, allPayments]);
+
   const initializePayments = async () => {
     try {
       setLoading(true);
+      setError('');
+      setPage(1);
+      
       // Check if backend is available
       const isHealthy = await checkPaymentsHealth();
       
       if (!isHealthy) {
+        console.log('Backend not available, using mock data');
         setUseMockData(true);
         setError('Using mock data - backend is not available');
         loadMockData();
       } else {
-        await fetchPayments();
+        await fetchInitialPayments();
       }
     } catch (error) {
       console.error('Initialization error:', error);
@@ -62,28 +99,144 @@ const PaymentList = () => {
   };
 
   const loadMockData = () => {
-    const mockData = getMockPayments();
-    setPayments(mockData);
+    console.log('Loading mock data...');
+    const mockData = getMockPayments(150); // Generate 150 mock payments
+    setAllPayments(mockData);
+    setTotalCount(mockData.length);
+    
+    // Initially show first 20
+    const initialDisplay = mockData.slice(0, pageSize);
+    setDisplayedPayments(initialDisplay);
+    setHasMore(mockData.length > pageSize);
+    
+    // Update stats based on all data
     updateStats(mockData);
     prepareCSVData(mockData);
+    setSuccess(`Loaded ${mockData.length} mock payments for testing`);
+    setTimeout(() => setSuccess(''), 3000);
   };
 
-  const fetchPayments = async () => {
+  const fetchInitialPayments = async () => {
     try {
       setLoading(true);
-      const data = await getAllPayments();
-      setPayments(data);
-      updateStats(data);
-      prepareCSVData(data);
-      setSuccess('Payments loaded successfully');
+      setError('');
+      setPage(1);
+      
+      console.log('Fetching initial payments...');
+      
+      // Use paginated endpoint to get first page
+      const result = await getPaginatedPayments(1, pageSize);
+      
+      console.log('Initial payments result:', result);
+      
+      if (result && result.payments) {
+        setAllPayments(result.payments);
+        setDisplayedPayments(result.payments);
+        setTotalCount(result.total);
+        setHasMore(result.payments.length < result.total);
+        updateStats(result.payments); // Stats based on current page
+        prepareCSVData(result.payments); // CSV based on all data? We'll need all data for export
+        setSuccess(`Loaded ${result.payments.length} payments`);
+        
+        // Fetch all data in background for CSV export and accurate stats
+        fetchAllPaymentsInBackground();
+      } else {
+        setError('No payments found');
+      }
+      
       setTimeout(() => setSuccess(''), 3000);
     } catch (error) {
-      console.error('Error fetching payments:', error);
-      setError('Failed to load payments. Using mock data instead.');
-      loadMockData();
+      console.error('❌ Error fetching payments:', error);
+      
+      if (error.response?.status === 404) {
+        setError('Admin payments endpoint not found. Using mock data instead.');
+        loadMockData();
+      } else {
+        setError(`Failed to load payments: ${error.message}. Using mock data.`);
+        loadMockData();
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchAllPaymentsInBackground = async () => {
+    try {
+      // Fetch all payments in the background for CSV export and accurate stats
+      const allData = await getAllPayments();
+      setAllPayments(allData);
+      setTotalCount(allData.length);
+      updateStats(allData);
+      prepareCSVData(allData);
+      
+      // Refresh displayed payments with new data but keep pagination
+      filterAndDisplayPayments(allData);
+      
+      console.log(`Background fetch complete: ${allData.length} total payments`);
+    } catch (error) {
+      console.error('Background fetch error:', error);
+    }
+  };
+
+  const loadMorePayments = async () => {
+    if (loadingMore || !hasMore) return;
+    
+    try {
+      setLoadingMore(true);
+      const nextPage = page + 1;
+      
+      if (useMockData) {
+        // For mock data, simulate pagination from allPayments
+        const start = nextPage * pageSize - pageSize;
+        const end = nextPage * pageSize;
+        const morePayments = allPayments.slice(start, end);
+        
+        if (morePayments.length > 0) {
+          setDisplayedPayments(prev => [...prev, ...morePayments]);
+          setPage(nextPage);
+          setHasMore(end < allPayments.length);
+        } else {
+          setHasMore(false);
+        }
+      } else {
+        // For real API, fetch next page
+        const result = await getPaginatedPayments(nextPage, pageSize);
+        
+        if (result && result.payments && result.payments.length > 0) {
+          setDisplayedPayments(prev => [...prev, ...result.payments]);
+          setPage(nextPage);
+          setHasMore(result.payments.length === pageSize && 
+                     (nextPage * pageSize) < result.total);
+        } else {
+          setHasMore(false);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading more payments:', error);
+      setError('Failed to load more payments');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const filterAndDisplayPayments = (allData = allPayments) => {
+    // Apply filter to all data
+    let filtered = allData;
+    if (filter !== 'all') {
+      filtered = allData.filter(p => p.status === filter);
+    }
+    
+    // Reset pagination for filtered view
+    setTotalCount(filtered.length);
+    
+    // Show first page of filtered data
+    const initialDisplay = filtered.slice(0, pageSize);
+    setDisplayedPayments(initialDisplay);
+    setPage(1);
+    setHasMore(filtered.length > pageSize);
+    
+    // Update stats based on filtered data
+    updateStats(filtered);
   };
 
   const updateStats = (data) => {
@@ -137,12 +290,32 @@ const PaymentList = () => {
 
   const handleVerify = async (md5Hash, paymentId) => {
     if (useMockData) {
-      // Mock verification for demo
       Swal.fire({
         title: 'Mock Verification',
         text: `Payment ${paymentId} would be verified with MD5: ${md5Hash}`,
-        icon: 'info'
+        icon: 'info',
+        timer: 2000,
+        showConfirmButton: false
       });
+      
+      // Simulate verification in mock mode
+      const updatedAllPayments = allPayments.map(p => 
+        p.id === paymentId 
+          ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
+          : p
+      );
+      
+      setAllPayments(updatedAllPayments);
+      
+      // Update displayed payments
+      const updatedDisplayed = displayedPayments.map(p => 
+        p.id === paymentId 
+          ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
+          : p
+      );
+      
+      setDisplayedPayments(updatedDisplayed);
+      updateStats(updatedAllPayments);
       return;
     }
 
@@ -153,20 +326,23 @@ const PaymentList = () => {
       if (result.status === 'PAID') {
         setSuccess(`Payment ${paymentId} verified successfully!`);
         
-        // Update local state
-        setPayments(prev => prev.map(p => 
+        // Update both all payments and displayed payments
+        const updatedAllPayments = allPayments.map(p => 
           p.id === paymentId 
-            ? { 
-                ...p, 
-                status: 'paid', 
-                paid_at: new Date().toISOString(),
-                course_id: result.course_id || p.course_id
-              }
+            ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
             : p
-        ));
+        );
         
-        // Refresh stats
-        fetchPayments();
+        setAllPayments(updatedAllPayments);
+        
+        const updatedDisplayed = displayedPayments.map(p => 
+          p.id === paymentId 
+            ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
+            : p
+        );
+        
+        setDisplayedPayments(updatedDisplayed);
+        updateStats(updatedAllPayments);
       } else {
         setError(`Payment ${paymentId} is still pending. Status: ${result.status}`);
       }
@@ -183,25 +359,22 @@ const PaymentList = () => {
     }
   };
 
-  const handleRefresh = async (paymentId) => {
-    try {
-      await fetchPayments();
-      setSuccess(`Payment list refreshed`);
-      
-      setTimeout(() => {
-        setSuccess('');
-      }, 3000);
-    } catch (error) {
-      setError('Failed to refresh payments');
-      console.error('Refresh error:', error);
+  const handleRefresh = async () => {
+    setPage(1);
+    if (useMockData) {
+      loadMockData();
+    } else {
+      await fetchInitialPayments();
     }
+    setSelectedPayments([]);
   };
 
   const handleBulkVerify = async () => {
-    const pendingPayments = filteredPayments.filter(p => p.status === 'pending');
+    // Get pending payments from filtered list
+    const pendingPayments = displayedPayments.filter(p => p.status === 'pending');
     
     if (pendingPayments.length === 0) {
-      setError('No pending payments to verify');
+      setError('No pending payments to verify in current view');
       setTimeout(() => setError(''), 3000);
       return;
     }
@@ -210,8 +383,28 @@ const PaymentList = () => {
       Swal.fire({
         title: 'Mock Bulk Verification',
         text: `Would verify ${pendingPayments.length} pending payments`,
-        icon: 'info'
+        icon: 'info',
+        timer: 2000,
+        showConfirmButton: false
       });
+      
+      // Simulate bulk verification in mock mode
+      const updatedAllPayments = allPayments.map(p => 
+        p.status === 'pending' 
+          ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
+          : p
+      );
+      
+      setAllPayments(updatedAllPayments);
+      
+      const updatedDisplayed = displayedPayments.map(p => 
+        p.status === 'pending' 
+          ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
+          : p
+      );
+      
+      setDisplayedPayments(updatedDisplayed);
+      updateStats(updatedAllPayments);
       return;
     }
 
@@ -231,19 +424,25 @@ const PaymentList = () => {
       if (results.verified && results.verified.length > 0) {
         setSuccess(`Successfully verified ${results.verified.length} payments!`);
         
-        // Update local state for verified payments
-        setPayments(prev => prev.map(p => {
+        // Update payments
+        const updatedAllPayments = allPayments.map(p => {
           if (results.verified.includes(p.khqr_md5)) {
-            return { 
-              ...p, 
-              status: 'paid', 
-              paid_at: new Date().toISOString() 
-            };
+            return { ...p, status: 'paid', paid_at: new Date().toISOString() };
           }
           return p;
-        }));
+        });
         
-        fetchPayments(); // Refresh to get updated stats
+        setAllPayments(updatedAllPayments);
+        
+        const updatedDisplayed = displayedPayments.map(p => {
+          if (results.verified.includes(p.khqr_md5)) {
+            return { ...p, status: 'paid', paid_at: new Date().toISOString() };
+          }
+          return p;
+        });
+        
+        setDisplayedPayments(updatedDisplayed);
+        updateStats(updatedAllPayments);
       } else {
         setError('No payments were verified');
       }
@@ -270,16 +469,16 @@ const PaymentList = () => {
   };
 
   const handleSelectAll = () => {
-    if (selectedPayments.length === filteredPayments.length) {
+    if (selectedPayments.length === displayedPayments.length) {
       setSelectedPayments([]);
     } else {
-      setSelectedPayments(filteredPayments.map(p => p.id));
+      setSelectedPayments(displayedPayments.map(p => p.id));
     }
   };
 
   const handleExportSelected = () => {
-    const selectedData = csvData.filter((_, index) => 
-      selectedPayments.includes(filteredPayments[index]?.id)
+    const selectedData = csvData.filter(item => 
+      selectedPayments.includes(item['ID'])
     );
     
     if (selectedData.length === 0) {
@@ -288,37 +487,84 @@ const PaymentList = () => {
       return;
     }
 
-    // The CSVLink component will handle the download
-    document.getElementById('selected-csv-link')?.click();
+    // Create CSV for selected only
+    const headers = Object.keys(selectedData[0] || {}).join(',');
+    const rows = selectedData.map(row => Object.values(row).map(val => `"${val}"`).join(','));
+    const csv = [headers, ...rows].join('\n');
+    
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `payments_selected_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    
+    setSuccess(`Exported ${selectedData.length} selected payments`);
+    setTimeout(() => setSuccess(''), 3000);
   };
 
   const handleExportAll = async () => {
     try {
-      if (useMockData) {
-        // Use CSVLink for mock data
-        document.getElementById('all-csv-link')?.click();
+      if (useMockData || csvData.length > 0) {
+        // Use CSV data we already prepared
+        const headers = Object.keys(csvData[0] || {}).join(',');
+        const rows = csvData.map(row => Object.values(row).map(val => `"${val}"`).join(','));
+        const csv = [headers, ...rows].join('\n');
+        
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', `payments_all_${new Date().toISOString().split('T')[0]}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        
+        setSuccess(`Exported ${csvData.length} payments`);
       } else {
-        // Use API export for real data
         await exportPayments('csv');
         setSuccess('Export started successfully');
-        setTimeout(() => setSuccess(''), 3000);
       }
+      setTimeout(() => setSuccess(''), 3000);
     } catch (error) {
       setError('Failed to export payments');
       console.error('Export error:', error);
     }
   };
 
-  const filteredPayments = payments.filter(payment => {
-    if (filter === 'all') return true;
-    return payment.status === filter;
-  });
-
-  // Get selected payments data for export
-  const getSelectedCSVData = () => {
-    return csvData.filter((_, index) => 
-      selectedPayments.includes(filteredPayments[index]?.id)
-    );
+  const runDebugTest = async () => {
+    const result = await testAdminPaymentsEndpoint();
+    
+    if (result.success) {
+      Swal.fire({
+        title: 'Debug Results',
+        html: `
+          <div class="text-left">
+            <p><strong>Status:</strong> ${result.status}</p>
+            <p><strong>Has Payments:</strong> ${result.hasPayments}</p>
+            <p><strong>Data Type:</strong> ${typeof result.data}</p>
+            <p><strong>Is Array:</strong> ${Array.isArray(result.data) ? 'Yes' : 'No'}</p>
+            ${result.data?.payments ? `<p><strong>Payments Count:</strong> ${result.data.payments.length}</p>` : ''}
+            ${result.data?.total ? `<p><strong>Total Records:</strong> ${result.data.total}</p>` : ''}
+          </div>
+        `,
+        icon: 'success'
+      });
+    } else {
+      Swal.fire({
+        title: 'Debug Failed',
+        html: `
+          <div class="text-left">
+            <p><strong>Status:</strong> ${result.status}</p>
+            <p><strong>Message:</strong> ${result.message}</p>
+            <p><strong>Data:</strong> ${JSON.stringify(result.data)}</p>
+          </div>
+        `,
+        icon: 'error'
+      });
+    }
   };
 
   return (
@@ -329,8 +575,16 @@ const PaymentList = () => {
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Payment Management</h1>
             <p className="text-gray-600">
-              {useMockData ? 'Using mock data - Backend not available' : 'Monitor, verify, and export all transactions'}
+              {useMockData 
+                ? '🔧 Using mock data - Backend not available' 
+                : `📊 Managing ${totalCount} total payments`}
             </p>
+            {!loading && (
+              <p className="text-sm text-gray-500">
+                Showing {displayedPayments.length} of {totalCount} payments
+                {filter !== 'all' && ` (filtered by ${filter})`}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap gap-3">
             <select
@@ -345,18 +599,18 @@ const PaymentList = () => {
             </select>
             
             <button
-              onClick={fetchPayments}
+              onClick={handleRefresh}
               disabled={loading}
               className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
               title="Refresh all payments"
             >
-              <i className="fas fa-sync-alt mr-2"></i>
+              <i className={`fas fa-sync-alt mr-2 ${loading ? 'fa-spin' : ''}`}></i>
               Refresh
             </button>
             
             <button
               onClick={handleBulkVerify}
-              disabled={bulkLoading || stats.pending === 0 || useMockData}
+              disabled={bulkLoading || stats.pending === 0}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
             >
               {bulkLoading ? (
@@ -367,12 +621,63 @@ const PaymentList = () => {
               ) : (
                 <>
                   <i className="fas fa-check-circle mr-2"></i>
-                  Verify All Pending ({stats.pending})
+                  Verify Visible Pending ({displayedPayments.filter(p => p.status === 'pending').length})
                 </>
               )}
             </button>
+
+            {/* Debug toggle button */}
+            <button
+              onClick={() => setShowDebug(!showDebug)}
+              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 flex items-center"
+              title="Toggle debug panel"
+            >
+              <i className="fas fa-bug mr-2"></i>
+              Debug
+            </button>
           </div>
         </div>
+
+        {/* Debug Panel */}
+        {showDebug && (
+          <div className="bg-gray-900 text-white p-4 rounded-lg font-mono text-sm">
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="font-bold">🔍 Debug Information</h3>
+              <button onClick={() => setShowDebug(false)} className="text-gray-400 hover:text-white">
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+            <div className="space-y-1">
+              <p><span className="text-gray-400">Total payments (all):</span> {allPayments.length}</p>
+              <p><span className="text-gray-400">Displayed payments:</span> {displayedPayments.length}</p>
+              <p><span className="text-gray-400">Total count from API:</span> {totalCount}</p>
+              <p><span className="text-gray-400">Current page:</span> {page}</p>
+              <p><span className="text-gray-400">Has more:</span> {hasMore ? 'Yes' : 'No'}</p>
+              <p><span className="text-gray-400">Using mock data:</span> {useMockData ? 'Yes' : 'No'}</p>
+              <p><span className="text-gray-400">Selected:</span> {selectedPayments.length}</p>
+              <p><span className="text-gray-400">Filter:</span> {filter}</p>
+              <div className="pt-2 flex gap-2">
+                <button
+                  onClick={runDebugTest}
+                  className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700"
+                >
+                  Test Admin Endpoint
+                </button>
+                <button
+                  onClick={() => {
+                    console.log('All payments:', allPayments);
+                    console.log('Displayed payments:', displayedPayments);
+                    console.log('CSV data:', csvData);
+                    alert('Check console for debug info');
+                  }}
+                  className="px-3 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-700"
+                >
+                  Log to Console
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Alerts */}
         <div className="space-y-2">
@@ -461,6 +766,9 @@ const PaymentList = () => {
                 <span className="font-medium">
                   {selectedPayments.length} payment{selectedPayments.length !== 1 ? 's' : ''} selected
                 </span>
+                <span className="ml-2 text-sm text-gray-500">
+                  of {displayedPayments.length} visible
+                </span>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
@@ -482,7 +790,7 @@ const PaymentList = () => {
           </div>
         )}
 
-        {/* Payment table */}
+        {/* Payment table with infinite scroll */}
         {loading ? (
           <div className="flex flex-col items-center justify-center h-64">
             <LoadingSpinner size="lg" />
@@ -493,7 +801,7 @@ const PaymentList = () => {
         ) : (
           <div className="bg-white rounded-xl shadow overflow-hidden">
             <PaymentTable
-              payments={filteredPayments}
+              payments={displayedPayments}
               onVerify={handleVerify}
               onRefresh={handleRefresh}
               selectedPayments={selectedPayments}
@@ -502,26 +810,49 @@ const PaymentList = () => {
               verifying={verifying}
               useMockData={useMockData}
             />
+            
+            {/* Infinite scroll loader */}
+            {hasMore && (
+              <div
+                ref={loaderRef}
+                className="flex justify-center items-center py-4 border-t border-gray-200"
+              >
+                {loadingMore ? (
+                  <div className="flex items-center text-gray-500">
+                    <LoadingSpinner size="sm" />
+                    <span className="ml-2">Loading more payments...</span>
+                  </div>
+                ) : (
+                  <span className="text-gray-400">Scroll for more</span>
+                )}
+              </div>
+            )}
+            
+            {/* End of list message */}
+            {!hasMore && displayedPayments.length > 0 && (
+              <div className="text-center py-4 border-t border-gray-200 text-gray-500">
+                <i className="fas fa-check-circle text-green-500 mr-2"></i>
+                You've seen all {totalCount} payments
+              </div>
+            )}
+            
+            {/* No results message */}
+            {displayedPayments.length === 0 && (
+              <div className="text-center py-12">
+                <i className="fas fa-receipt text-5xl text-gray-300 mb-4"></i>
+                <p className="text-gray-500 text-lg">No payments found</p>
+                {filter !== 'all' && (
+                  <button
+                    onClick={() => setFilter('all')}
+                    className="mt-2 text-blue-600 hover:text-blue-800"
+                  >
+                    Clear filter
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
-
-        {/* Hidden CSV Links */}
-        <div className="hidden">
-          <CSVLink
-            id="all-csv-link"
-            data={csvData}
-            filename={`payments_export_all_${new Date().toISOString().split('T')[0]}.csv`}
-          >
-            Export All
-          </CSVLink>
-          <CSVLink
-            id="selected-csv-link"
-            data={getSelectedCSVData()}
-            filename={`payments_export_selected_${new Date().toISOString().split('T')[0]}.csv`}
-          >
-            Export Selected
-          </CSVLink>
-        </div>
 
         {/* Export & Bulk Actions */}
         <div className="bg-white rounded-xl shadow p-6">
@@ -531,7 +862,7 @@ const PaymentList = () => {
               <p className="text-gray-600 text-sm">
                 {useMockData 
                   ? 'Export mock data for testing' 
-                  : 'Export payments data or perform bulk operations'}
+                  : `Export ${totalCount} payments data or perform bulk operations`}
               </p>
             </div>
             <div className="flex flex-wrap gap-3">
@@ -540,28 +871,14 @@ const PaymentList = () => {
                 className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition inline-flex items-center"
               >
                 <i className="fas fa-file-csv mr-2"></i>
-                Export All to CSV
-              </button>
-              
-              <button
-                onClick={() => {
-                  Swal.fire({
-                    title: 'More Actions',
-                    text: 'Additional bulk actions would be implemented here',
-                    icon: 'info'
-                  });
-                }}
-                className="px-4 py-2 bg-gray-100 text-gray-800 rounded-lg hover:bg-gray-200 transition inline-flex items-center"
-              >
-                <i className="fas fa-cog mr-2"></i>
-                More Actions
+                Export All to CSV ({totalCount} records)
               </button>
               
               {useMockData && (
                 <button
                   onClick={() => {
                     setUseMockData(false);
-                    fetchPayments();
+                    initializePayments();
                   }}
                   className="px-4 py-2 bg-yellow-100 text-yellow-800 rounded-lg hover:bg-yellow-200 transition inline-flex items-center"
                 >
@@ -574,7 +891,7 @@ const PaymentList = () => {
           
           {/* Quick stats */}
           <div className="mt-6 pt-6 border-t border-gray-200">
-            <h4 className="text-sm font-semibold text-gray-700 mb-2">Quick Overview</h4>
+            <h4 className="text-sm font-semibold text-gray-700 mb-2">Payment Summary</h4>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="text-center p-3 bg-blue-50 rounded-lg">
                 <div className="text-lg font-bold text-blue-600">{stats.paid}</div>
