@@ -19,6 +19,9 @@ import PaymentList from './pages/Payments/PaymentList';
 import EnrollmentList from './pages/Enrollments/EnrollmentList';
 import Settings from './pages/Settings';
 import BackupRestore from './pages/BackupRestore';
+import PromoCodes from './pages/PromoCodes/PromoCodes';
+import PromoCodeForm from './pages/PromoCodes/PromoCodeForm';
+import PromoCodeDetails from './pages/PromoCodes/PromoCodeDetails';
 function App() {
   return (
     <ErrorBoundary>
@@ -47,6 +50,11 @@ function App() {
                 <Route path="/enrollments" element={<EnrollmentList />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/backup" element={<BackupRestore />} />
+                <Route path="/promocodes" element={<PromoCodes/>} />
+                <Route path="/promocodes/create" element={<PromoCodeForm />} />
+                <Route path="/promocodes/edit/:id" element={<PromoCodeForm />} />
+                <Route path="/promocodes/:id" element={<PromoCodeDetails />} />
+
                 
                 {/* Redirect root to dashboard */}
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />

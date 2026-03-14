@@ -19,8 +19,8 @@ import { CSVLink } from 'react-csv';
 import Swal from 'sweetalert2';
 
 const PaymentList = () => {
-  const [allPayments, setAllPayments] = useState([]); // Store all fetched payments
-  const [displayedPayments, setDisplayedPayments] = useState([]); // Payments to show (paginated)
+  const [allPayments, setAllPayments] = useState([]);
+  const [displayedPayments, setDisplayedPayments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [verifying, setVerifying] = useState(false);
@@ -35,7 +35,7 @@ const PaymentList = () => {
   const [hasMore, setHasMore] = useState(true);
   const [page, setPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
-  const pageSize = 20; // Load 20 at a time
+  const pageSize = 20;
   
   const observerRef = useRef();
   const loaderRef = useCallback(node => {
@@ -64,7 +64,6 @@ const PaymentList = () => {
     initializePayments();
   }, []);
 
-  // Update displayed payments when filter changes
   useEffect(() => {
     if (allPayments.length > 0) {
       filterAndDisplayPayments();
@@ -77,11 +76,9 @@ const PaymentList = () => {
       setError('');
       setPage(1);
       
-      // Check if backend is available
       const isHealthy = await checkPaymentsHealth();
       
       if (!isHealthy) {
-        console.log('Backend not available, using mock data');
         setUseMockData(true);
         setError('Using mock data - backend is not available');
         loadMockData();
@@ -99,17 +96,11 @@ const PaymentList = () => {
   };
 
   const loadMockData = () => {
-    console.log('Loading mock data...');
-    const mockData = getMockPayments(150); // Generate 150 mock payments
+    const mockData = getMockPayments(150);
     setAllPayments(mockData);
     setTotalCount(mockData.length);
-    
-    // Initially show first 20
-    const initialDisplay = mockData.slice(0, pageSize);
-    setDisplayedPayments(initialDisplay);
+    setDisplayedPayments(mockData.slice(0, pageSize));
     setHasMore(mockData.length > pageSize);
-    
-    // Update stats based on all data
     updateStats(mockData);
     prepareCSVData(mockData);
     setSuccess(`Loaded ${mockData.length} mock payments for testing`);
@@ -122,23 +113,16 @@ const PaymentList = () => {
       setError('');
       setPage(1);
       
-      console.log('Fetching initial payments...');
-      
-      // Use paginated endpoint to get first page
       const result = await getPaginatedPayments(1, pageSize);
-      
-      console.log('Initial payments result:', result);
       
       if (result && result.payments) {
         setAllPayments(result.payments);
         setDisplayedPayments(result.payments);
         setTotalCount(result.total);
         setHasMore(result.payments.length < result.total);
-        updateStats(result.payments); // Stats based on current page
-        prepareCSVData(result.payments); // CSV based on all data? We'll need all data for export
+        updateStats(result.payments);
+        prepareCSVData(result.payments);
         setSuccess(`Loaded ${result.payments.length} payments`);
-        
-        // Fetch all data in background for CSV export and accurate stats
         fetchAllPaymentsInBackground();
       } else {
         setError('No payments found');
@@ -146,7 +130,7 @@ const PaymentList = () => {
       
       setTimeout(() => setSuccess(''), 3000);
     } catch (error) {
-      console.error('❌ Error fetching payments:', error);
+      console.error('Error fetching payments:', error);
       
       if (error.response?.status === 404) {
         setError('Admin payments endpoint not found. Using mock data instead.');
@@ -162,17 +146,12 @@ const PaymentList = () => {
 
   const fetchAllPaymentsInBackground = async () => {
     try {
-      // Fetch all payments in the background for CSV export and accurate stats
       const allData = await getAllPayments();
       setAllPayments(allData);
       setTotalCount(allData.length);
       updateStats(allData);
       prepareCSVData(allData);
-      
-      // Refresh displayed payments with new data but keep pagination
       filterAndDisplayPayments(allData);
-      
-      console.log(`Background fetch complete: ${allData.length} total payments`);
     } catch (error) {
       console.error('Background fetch error:', error);
     }
@@ -186,8 +165,7 @@ const PaymentList = () => {
       const nextPage = page + 1;
       
       if (useMockData) {
-        // For mock data, simulate pagination from allPayments
-        const start = nextPage * pageSize - pageSize;
+        const start = (nextPage - 1) * pageSize;
         const end = nextPage * pageSize;
         const morePayments = allPayments.slice(start, end);
         
@@ -199,14 +177,12 @@ const PaymentList = () => {
           setHasMore(false);
         }
       } else {
-        // For real API, fetch next page
         const result = await getPaginatedPayments(nextPage, pageSize);
         
         if (result && result.payments && result.payments.length > 0) {
           setDisplayedPayments(prev => [...prev, ...result.payments]);
           setPage(nextPage);
-          setHasMore(result.payments.length === pageSize && 
-                     (nextPage * pageSize) < result.total);
+          setHasMore(result.payments.length === pageSize && (nextPage * pageSize) < result.total);
         } else {
           setHasMore(false);
         }
@@ -220,22 +196,15 @@ const PaymentList = () => {
   };
 
   const filterAndDisplayPayments = (allData = allPayments) => {
-    // Apply filter to all data
     let filtered = allData;
     if (filter !== 'all') {
       filtered = allData.filter(p => p.status === filter);
     }
     
-    // Reset pagination for filtered view
     setTotalCount(filtered.length);
-    
-    // Show first page of filtered data
-    const initialDisplay = filtered.slice(0, pageSize);
-    setDisplayedPayments(initialDisplay);
+    setDisplayedPayments(filtered.slice(0, pageSize));
     setPage(1);
     setHasMore(filtered.length > pageSize);
-    
-    // Update stats based on filtered data
     updateStats(filtered);
   };
 
@@ -243,7 +212,8 @@ const PaymentList = () => {
     const paidPayments = data.filter(p => p.status === 'paid');
     const pendingPayments = data.filter(p => p.status === 'pending');
     const failedPayments = data.filter(p => p.status === 'failed');
-    const totalRevenue = paidPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+    // ✅ Use amount (final/discounted price) for revenue
+    const totalRevenue = paidPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
     const successRate = data.length > 0 
       ? Math.round((paidPayments.length / data.length) * 100) 
       : 0;
@@ -267,7 +237,11 @@ const PaymentList = () => {
       'User Email': payment.user?.email || '',
       'Course ID': payment.course_id,
       'Course Title': payment.course?.title || 'Unknown Course',
-      'Amount': payment.amount,
+      // ✅ Include all amount fields in CSV
+      'Final Amount': payment.amount,
+      'Original Amount': payment.original_amount || payment.amount,
+      'Discount Amount': payment.discount_amount || 0,
+      'Promo Code': payment.promo_code?.code || '',
       'Currency': payment.currency || 'USD',
       'Status': payment.status,
       'Payment Method': payment.payment_method || 'bakong',
@@ -288,71 +262,68 @@ const PaymentList = () => {
     }
   };
 
-  const handleVerify = async (md5Hash, paymentId) => {
+  // ✅ FIX: Correct signature — (verifyIdentifier, paymentMethod) matches what PaymentTable sends
+  const handleVerify = async (verifyIdentifier, paymentMethod) => {
+    if (!verifyIdentifier) {
+      setError('No identifier available for verification');
+      return;
+    }
+
     if (useMockData) {
       Swal.fire({
         title: 'Mock Verification',
-        text: `Payment ${paymentId} would be verified with MD5: ${md5Hash}`,
+        text: `Payment would be verified with: ${verifyIdentifier}`,
         icon: 'info',
         timer: 2000,
         showConfirmButton: false
       });
-      
-      // Simulate verification in mock mode
-      const updatedAllPayments = allPayments.map(p => 
-        p.id === paymentId 
+
+      // ✅ Match by transaction_id or khqr_md5 depending on method
+      const updateFn = (p) => {
+        const matches = paymentMethod === 'BAKONG_QR'
+          ? p.khqr_md5 === verifyIdentifier
+          : p.transaction_id === verifyIdentifier;
+        return matches
           ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
-          : p
-      );
-      
-      setAllPayments(updatedAllPayments);
-      
-      // Update displayed payments
-      const updatedDisplayed = displayedPayments.map(p => 
-        p.id === paymentId 
-          ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
-          : p
-      );
-      
-      setDisplayedPayments(updatedDisplayed);
-      updateStats(updatedAllPayments);
+          : p;
+      };
+
+      setAllPayments(prev => prev.map(updateFn));
+      setDisplayedPayments(prev => prev.map(updateFn));
+      updateStats(allPayments.map(updateFn));
       return;
     }
 
     try {
       setVerifying(true);
-      const result = await verifyPayment(md5Hash);
+      const result = await verifyPayment(verifyIdentifier);
       
-      if (result.status === 'PAID') {
-        setSuccess(`Payment ${paymentId} verified successfully!`);
+      if (result.status === 'PAID' || result.paid) {
+        setSuccess(`Payment verified successfully!`);
         
-        // Update both all payments and displayed payments
-        const updatedAllPayments = allPayments.map(p => 
-          p.id === paymentId 
+        // ✅ Match by the correct field depending on payment method
+        const updateFn = (p) => {
+          const matches = paymentMethod === 'BAKONG_QR'
+            ? p.khqr_md5 === verifyIdentifier
+            : p.transaction_id === verifyIdentifier;
+          return matches
             ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
-            : p
-        );
-        
-        setAllPayments(updatedAllPayments);
-        
-        const updatedDisplayed = displayedPayments.map(p => 
-          p.id === paymentId 
-            ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
-            : p
-        );
-        
-        setDisplayedPayments(updatedDisplayed);
-        updateStats(updatedAllPayments);
+            : p;
+        };
+
+        setAllPayments(prev => {
+          const updated = prev.map(updateFn);
+          updateStats(updated);
+          return updated;
+        });
+        setDisplayedPayments(prev => prev.map(updateFn));
       } else {
-        setError(`Payment ${paymentId} is still pending. Status: ${result.status}`);
+        setError(`Payment is still pending. Status: ${result.status}`);
       }
       
-      setTimeout(() => {
-        setSuccess('');
-        setError('');
-      }, 5000);
+      setTimeout(() => { setSuccess(''); setError(''); }, 5000);
     } catch (error) {
-      setError(`Failed to verify payment ${paymentId}: ${error.message}`);
+      setError(`Failed to verify payment: ${error.message}`);
       console.error('Verification error:', error);
     } finally {
       setVerifying(false);
@@ -369,8 +340,27 @@ const PaymentList = () => {
     setSelectedPayments([]);
   };
 
+  // ✅ FIX: Refresh a single payment by ID from the table's refresh button
+  const handleRefreshSingle = async (paymentId) => {
+    if (useMockData) return;
+    try {
+      // Re-fetch full list and update just this payment
+      const allData = await getAllPayments();
+      const refreshed = allData.find(p => p.id === paymentId);
+      if (refreshed) {
+        const updateFn = (p) => p.id === paymentId ? refreshed : p;
+        setAllPayments(prev => prev.map(updateFn));
+        setDisplayedPayments(prev => prev.map(updateFn));
+        updateStats(allPayments.map(updateFn));
+        setSuccess(`Payment #${paymentId} refreshed`);
+        setTimeout(() => setSuccess(''), 3000);
+      }
+    } catch (error) {
+      setError(`Failed to refresh payment: ${error.message}`);
+    }
+  };
+
   const handleBulkVerify = async () => {
-    // Get pending payments from filtered list
     const pendingPayments = displayedPayments.filter(p => p.status === 'pending');
     
     if (pendingPayments.length === 0) {
@@ -388,23 +378,12 @@ const PaymentList = () => {
         showConfirmButton: false
       });
       
-      // Simulate bulk verification in mock mode
-      const updatedAllPayments = allPayments.map(p => 
-        p.status === 'pending' 
-          ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
-          : p
-      );
-      
-      setAllPayments(updatedAllPayments);
-      
-      const updatedDisplayed = displayedPayments.map(p => 
-        p.status === 'pending' 
-          ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
-          : p
-      );
-      
-      setDisplayedPayments(updatedDisplayed);
-      updateStats(updatedAllPayments);
+      const updateFn = (p) => p.status === 'pending'
+        ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
+        : p;
+
+      setAllPayments(prev => { const u = prev.map(updateFn); updateStats(u); return u; });
+      setDisplayedPayments(prev => prev.map(updateFn));
       return;
     }
 
@@ -415,7 +394,7 @@ const PaymentList = () => {
         .map(p => p.khqr_md5);
       
       if (md5Hashes.length === 0) {
-        setError('No valid payments for bulk verification');
+        setError('No valid BAKONG payments for bulk verification');
         return;
       }
 
@@ -424,25 +403,12 @@ const PaymentList = () => {
       if (results.verified && results.verified.length > 0) {
         setSuccess(`Successfully verified ${results.verified.length} payments!`);
         
-        // Update payments
-        const updatedAllPayments = allPayments.map(p => {
-          if (results.verified.includes(p.khqr_md5)) {
-            return { ...p, status: 'paid', paid_at: new Date().toISOString() };
-          }
-          return p;
-        });
-        
-        setAllPayments(updatedAllPayments);
-        
-        const updatedDisplayed = displayedPayments.map(p => {
-          if (results.verified.includes(p.khqr_md5)) {
-            return { ...p, status: 'paid', paid_at: new Date().toISOString() };
-          }
-          return p;
-        });
-        
-        setDisplayedPayments(updatedDisplayed);
-        updateStats(updatedAllPayments);
+        const updateFn = (p) => results.verified.includes(p.khqr_md5)
+          ? { ...p, status: 'paid', paid_at: new Date().toISOString() }
+          : p;
+
+        setAllPayments(prev => { const u = prev.map(updateFn); updateStats(u); return u; });
+        setDisplayedPayments(prev => prev.map(updateFn));
       } else {
         setError('No payments were verified');
       }
@@ -451,21 +417,14 @@ const PaymentList = () => {
       console.error('Bulk verification error:', error);
     } finally {
       setBulkLoading(false);
-      setTimeout(() => {
-        setSuccess('');
-        setError('');
-      }, 5000);
+      setTimeout(() => { setSuccess(''); setError(''); }, 5000);
     }
   };
 
   const handlePaymentSelect = (paymentId) => {
-    setSelectedPayments(prev => {
-      if (prev.includes(paymentId)) {
-        return prev.filter(id => id !== paymentId);
-      } else {
-        return [...prev, paymentId];
-      }
-    });
+    setSelectedPayments(prev =>
+      prev.includes(paymentId) ? prev.filter(id => id !== paymentId) : [...prev, paymentId]
+    );
   };
 
   const handleSelectAll = () => {
@@ -477,9 +436,7 @@ const PaymentList = () => {
   };
 
   const handleExportSelected = () => {
-    const selectedData = csvData.filter(item => 
-      selectedPayments.includes(item['ID'])
-    );
+    const selectedData = csvData.filter(item => selectedPayments.includes(item['ID']));
     
     if (selectedData.length === 0) {
       setError('No payments selected for export');
@@ -487,7 +444,6 @@ const PaymentList = () => {
       return;
     }
 
-    // Create CSV for selected only
     const headers = Object.keys(selectedData[0] || {}).join(',');
     const rows = selectedData.map(row => Object.values(row).map(val => `"${val}"`).join(','));
     const csv = [headers, ...rows].join('\n');
@@ -508,7 +464,6 @@ const PaymentList = () => {
   const handleExportAll = async () => {
     try {
       if (useMockData || csvData.length > 0) {
-        // Use CSV data we already prepared
         const headers = Object.keys(csvData[0] || {}).join(',');
         const rows = csvData.map(row => Object.values(row).map(val => `"${val}"`).join(','));
         const csv = [headers, ...rows].join('\n');
@@ -602,7 +557,6 @@ const PaymentList = () => {
               onClick={handleRefresh}
               disabled={loading}
               className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
-              title="Refresh all payments"
             >
               <i className={`fas fa-sync-alt mr-2 ${loading ? 'fa-spin' : ''}`}></i>
               Refresh
@@ -614,26 +568,19 @@ const PaymentList = () => {
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
             >
               {bulkLoading ? (
-                <>
-                  <i className="fas fa-spinner fa-spin mr-2"></i>
-                  Verifying...
-                </>
+                <><i className="fas fa-spinner fa-spin mr-2"></i>Verifying...</>
               ) : (
-                <>
-                  <i className="fas fa-check-circle mr-2"></i>
+                <><i className="fas fa-check-circle mr-2"></i>
                   Verify Visible Pending ({displayedPayments.filter(p => p.status === 'pending').length})
                 </>
               )}
             </button>
 
-            {/* Debug toggle button */}
             <button
               onClick={() => setShowDebug(!showDebug)}
               className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 flex items-center"
-              title="Toggle debug panel"
             >
-              <i className="fas fa-bug mr-2"></i>
-              Debug
+              <i className="fas fa-bug mr-2"></i>Debug
             </button>
           </div>
         </div>
@@ -667,7 +614,6 @@ const PaymentList = () => {
                   onClick={() => {
                     console.log('All payments:', allPayments);
                     console.log('Displayed payments:', displayedPayments);
-                    console.log('CSV data:', csvData);
                     alert('Check console for debug info');
                   }}
                   className="px-3 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-700"
@@ -681,26 +627,10 @@ const PaymentList = () => {
 
         {/* Alerts */}
         <div className="space-y-2">
-          {error && (
-            <Alert 
-              type={useMockData ? "warning" : "error"} 
-              message={error} 
-              onClose={() => setError('')} 
-            />
-          )}
-          {success && (
-            <Alert 
-              type="success" 
-              message={success} 
-              onClose={() => setSuccess('')} 
-            />
-          )}
+          {error && <Alert type={useMockData ? "warning" : "error"} message={error} onClose={() => setError('')} />}
+          {success && <Alert type="success" message={success} onClose={() => setSuccess('')} />}
           {useMockData && (
-            <Alert 
-              type="info" 
-              message="Using mock data. Backend is not available. Some features may be limited." 
-              onClose={() => {}} 
-            />
+            <Alert type="info" message="Using mock data. Backend is not available." onClose={() => {}} />
           )}
         </div>
 
@@ -725,9 +655,7 @@ const PaymentList = () => {
               </div>
               <div>
                 <p className="text-sm text-gray-600">Total Revenue</p>
-                <p className="text-2xl font-bold">
-                  ${stats.totalRevenue.toFixed(2)}
-                </p>
+                <p className="text-2xl font-bold">${stats.totalRevenue.toFixed(2)}</p>
               </div>
             </div>
           </div>
@@ -766,31 +694,27 @@ const PaymentList = () => {
                 <span className="font-medium">
                   {selectedPayments.length} payment{selectedPayments.length !== 1 ? 's' : ''} selected
                 </span>
-                <span className="ml-2 text-sm text-gray-500">
-                  of {displayedPayments.length} visible
-                </span>
+                <span className="ml-2 text-sm text-gray-500">of {displayedPayments.length} visible</span>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
                   onClick={handleExportSelected}
                   className="px-3 py-1 bg-blue-100 text-blue-800 rounded-lg hover:bg-blue-200 text-sm flex items-center"
                 >
-                  <i className="fas fa-download mr-1"></i>
-                  Export Selected
+                  <i className="fas fa-download mr-1"></i>Export Selected
                 </button>
                 <button
                   onClick={() => setSelectedPayments([])}
                   className="px-3 py-1 bg-gray-100 text-gray-800 rounded-lg hover:bg-gray-200 text-sm flex items-center"
                 >
-                  <i className="fas fa-times mr-1"></i>
-                  Clear Selection
+                  <i className="fas fa-times mr-1"></i>Clear Selection
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Payment table with infinite scroll */}
+        {/* Payment table */}
         {loading ? (
           <div className="flex flex-col items-center justify-center h-64">
             <LoadingSpinner size="lg" />
@@ -802,8 +726,8 @@ const PaymentList = () => {
           <div className="bg-white rounded-xl shadow overflow-hidden">
             <PaymentTable
               payments={displayedPayments}
-              onVerify={handleVerify}
-              onRefresh={handleRefresh}
+              onVerify={handleVerify}           // (verifyIdentifier, paymentMethod)
+              onRefresh={handleRefreshSingle}   // (paymentId)
               selectedPayments={selectedPayments}
               onSelectPayment={handlePaymentSelect}
               onSelectAll={handleSelectAll}
@@ -813,10 +737,7 @@ const PaymentList = () => {
             
             {/* Infinite scroll loader */}
             {hasMore && (
-              <div
-                ref={loaderRef}
-                className="flex justify-center items-center py-4 border-t border-gray-200"
-              >
+              <div ref={loaderRef} className="flex justify-center items-center py-4 border-t border-gray-200">
                 {loadingMore ? (
                   <div className="flex items-center text-gray-500">
                     <LoadingSpinner size="sm" />
@@ -828,7 +749,6 @@ const PaymentList = () => {
               </div>
             )}
             
-            {/* End of list message */}
             {!hasMore && displayedPayments.length > 0 && (
               <div className="text-center py-4 border-t border-gray-200 text-gray-500">
                 <i className="fas fa-check-circle text-green-500 mr-2"></i>
@@ -836,16 +756,12 @@ const PaymentList = () => {
               </div>
             )}
             
-            {/* No results message */}
             {displayedPayments.length === 0 && (
               <div className="text-center py-12">
                 <i className="fas fa-receipt text-5xl text-gray-300 mb-4"></i>
                 <p className="text-gray-500 text-lg">No payments found</p>
                 {filter !== 'all' && (
-                  <button
-                    onClick={() => setFilter('all')}
-                    className="mt-2 text-blue-600 hover:text-blue-800"
-                  >
+                  <button onClick={() => setFilter('all')} className="mt-2 text-blue-600 hover:text-blue-800">
                     Clear filter
                   </button>
                 )}
@@ -860,8 +776,8 @@ const PaymentList = () => {
             <div>
               <h3 className="text-lg font-semibold mb-2">Export & Bulk Actions</h3>
               <p className="text-gray-600 text-sm">
-                {useMockData 
-                  ? 'Export mock data for testing' 
+                {useMockData
+                  ? 'Export mock data for testing'
                   : `Export ${totalCount} payments data or perform bulk operations`}
               </p>
             </div>
@@ -876,20 +792,15 @@ const PaymentList = () => {
               
               {useMockData && (
                 <button
-                  onClick={() => {
-                    setUseMockData(false);
-                    initializePayments();
-                  }}
+                  onClick={() => { setUseMockData(false); initializePayments(); }}
                   className="px-4 py-2 bg-yellow-100 text-yellow-800 rounded-lg hover:bg-yellow-200 transition inline-flex items-center"
                 >
-                  <i className="fas fa-sync mr-2"></i>
-                  Retry Real Data
+                  <i className="fas fa-sync mr-2"></i>Retry Real Data
                 </button>
               )}
             </div>
           </div>
           
-          {/* Quick stats */}
           <div className="mt-6 pt-6 border-t border-gray-200">
             <h4 className="text-sm font-semibold text-gray-700 mb-2">Payment Summary</h4>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

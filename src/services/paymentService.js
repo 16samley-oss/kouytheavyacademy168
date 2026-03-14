@@ -22,12 +22,13 @@ export const getPayment = async (paymentId) => {
   }
 };
 
-export const createKHQRPayment = async (courseId, amount, currency = 'USD') => {
+export const createKHQRPayment = async (courseId, amount, currency = 'USD', promoCode = null) => {
   try {
     const response = await api.post('/api/v1/payments/khqr', {
       course_id: courseId,
-      amount: amount,
-      currency: currency
+      amount: amount, // This should already be the discounted amount if promo applied
+      currency: currency,
+      promo_code: promoCode
     });
     return response.data;
   } catch (error) {
@@ -46,15 +47,14 @@ export const verifyPayment = async (md5_hash) => {
   }
 };
 
-// Admin endpoints - FIXED: Now correctly uses /admin/payments/all
+// Admin endpoints - FIXED: Now correctly handles discount fields
 export const getAllPayments = async (params = {}) => {
   try {
     console.log('Fetching payments from /admin/payments/all');
     
-    // First request to get first page and total count
     const initialResponse = await api.get('/admin/payments/all', { 
       params: { 
-        limit: 10000, // Request max per page (adjust based on your API)
+        limit: 10000,
         skip: 0,
         ...params 
       } 
@@ -62,48 +62,38 @@ export const getAllPayments = async (params = {}) => {
 
     console.log('Initial response:', initialResponse);
 
-    // Handle different response formats
     let payments = [];
     let totalCount = 0;
 
-    // Case 1: Response is an array directly
+    // Handle different response formats
     if (Array.isArray(initialResponse.data)) {
       payments = initialResponse.data;
       totalCount = payments.length;
-      console.log('Response is array with length:', payments.length);
     } 
-    // Case 2: Response has payments array and total count (most common)
     else if (initialResponse.data && initialResponse.data.payments) {
       payments = initialResponse.data.payments;
       totalCount = initialResponse.data.total || payments.length;
-      console.log('Response has payments array:', {
-        paymentsLength: payments.length,
-        total: initialResponse.data.total
-      });
     }
-    // Case 3: Response has data field
     else if (initialResponse.data && initialResponse.data.data) {
       payments = initialResponse.data.data;
       totalCount = initialResponse.data.total || payments.length;
     }
-    // Case 4: Something else
     else {
       payments = initialResponse.data || [];
       totalCount = payments.length;
     }
 
-    // If there's a total count and it's more than what we got, fetch all pages
+    // Normalize payment data to ensure discount fields are present
+    payments = payments.map(normalizePaymentData);
+
+    // Fetch all pages if needed
     if (totalCount > payments.length) {
       console.log(`📊 Total records: ${totalCount}, Current: ${payments.length}. Fetching all pages...`);
       
-      const perPage = 100; // Match your API's max per page
+      const perPage = 100;
       const totalPages = Math.ceil(totalCount / perPage);
       let allPayments = [...payments];
       
-      // Show progress indicator
-      console.log(`🔄 Fetching ${totalPages} total pages...`);
-      
-      // Fetch remaining pages
       for (let page = 1; page < totalPages; page++) {
         try {
           console.log(`Fetching page ${page + 1}/${totalPages}...`);
@@ -116,7 +106,6 @@ export const getAllPayments = async (params = {}) => {
             }
           });
           
-          // Extract payments from response
           let pagePayments = [];
           if (Array.isArray(response.data)) {
             pagePayments = response.data;
@@ -126,12 +115,12 @@ export const getAllPayments = async (params = {}) => {
             pagePayments = response.data.data;
           }
           
+          // Normalize each payment
+          pagePayments = pagePayments.map(normalizePaymentData);
           allPayments = [...allPayments, ...pagePayments];
-          console.log(`✅ Page ${page + 1} complete. Total now: ${allPayments.length}`);
           
         } catch (pageError) {
           console.error(`❌ Error fetching page ${page + 1}:`, pageError);
-          // Continue with what we have
         }
       }
       
@@ -145,19 +134,51 @@ export const getAllPayments = async (params = {}) => {
   } catch (error) {
     console.error('❌ Get all payments error:', error);
     
-    // Handle 404 specifically
     if (error.response?.status === 404) {
       console.warn('⚠️ Admin endpoint not found (404). Using mock data.');
-      return getMockPayments();
+      return getMockPayments(150);
     }
     
-    // For other errors, throw but include helpful info
     error.message = `Failed to fetch payments: ${error.message}`;
     throw error;
   }
 };
 
-// NEW: Paginated version for better performance
+// Helper function to normalize payment data and ensure discount fields are correct
+const normalizePaymentData = (payment) => {
+  if (!payment) return payment;
+  
+  // Ensure we have amount as number
+  const amount = parseFloat(payment.amount) || 0;
+  const originalAmount = parseFloat(payment.original_amount) || amount;
+  const discountAmount = parseFloat(payment.discount_amount) || 0;
+  
+  // CRITICAL FIX: If we have original_amount and discount_amount, 
+  // ensure amount = original_amount - discount_amount
+  if (payment.original_amount && payment.discount_amount) {
+    const calculatedAmount = originalAmount - discountAmount;
+    
+    // If current amount doesn't match calculation, log warning
+    if (Math.abs(amount - calculatedAmount) > 0.01) {
+      console.warn(`⚠️ Payment ${payment.id} has incorrect amount:`, {
+        id: payment.id,
+        transaction_id: payment.transaction_id,
+        amount,
+        original_amount: originalAmount,
+        discount_amount: discountAmount,
+        calculated: calculatedAmount,
+        promo_code: payment.promo_code?.code
+      });
+      
+      // Fix the amount
+      payment.amount = calculatedAmount;
+    }
+  }
+  
+  return payment;
+};
+
+// NEW: Paginated version with normalized amounts
 export const getPaginatedPayments = async (page = 1, limit = 50, filters = {}) => {
   try {
     const response = await api.get('/admin/payments/all', {
@@ -168,31 +189,26 @@ export const getPaginatedPayments = async (page = 1, limit = 50, filters = {}) =
       }
     });
     
-    // Return with pagination metadata
+    let payments = [];
+    let total = 0;
+    
     if (response.data && response.data.payments) {
-      return {
-        payments: response.data.payments,
-        total: response.data.total || response.data.payments.length,
-        page,
-        limit,
-        totalPages: Math.ceil((response.data.total || response.data.payments.length) / limit)
-      };
+      payments = response.data.payments.map(normalizePaymentData);
+      total = response.data.total || payments.length;
     } else if (Array.isArray(response.data)) {
-      return {
-        payments: response.data,
-        total: response.data.length,
-        page,
-        limit,
-        totalPages: Math.ceil(response.data.length / limit)
-      };
+      payments = response.data.map(normalizePaymentData);
+      total = payments.length;
+    } else {
+      payments = (response.data || []).map(normalizePaymentData);
+      total = payments.length;
     }
     
     return {
-      payments: response.data || [],
-      total: response.data?.length || 0,
+      payments,
+      total,
       page,
       limit,
-      totalPages: 1
+      totalPages: Math.ceil(total / limit)
     };
   } catch (error) {
     console.error('Get paginated payments error:', error);
@@ -217,12 +233,10 @@ export const exportPayments = async (format = 'csv') => {
       responseType: 'blob'
     });
     
-    // Create download link
     const url = window.URL.createObjectURL(new Blob([response.data]));
     const link = document.createElement('a');
     link.href = url;
     
-    // Extract filename from headers or use default
     const contentDisposition = response.headers['content-disposition'];
     let filename = `payments_export_${new Date().toISOString().split('T')[0]}.${format}`;
     
@@ -256,7 +270,7 @@ export const getQRImage = async (md5_hash) => {
   }
 };
 
-// Enhanced mock data with more records
+// Enhanced mock data with proper discount handling
 export const getMockPayments = (count = 150) => {
   const statuses = ['paid', 'pending', 'failed'];
   const names = ['John Doe', 'Jane Smith', 'Bob Johnson', 'Alice Brown', 'Charlie Wilson', 'Diana Prince', 'Evan Wright', 'Fiona Adams'];
@@ -270,6 +284,7 @@ export const getMockPayments = (count = 150) => {
     'Machine Learning A-Z',
     'Digital Marketing 101'
   ];
+  const promoCodeTypes = ['SAVE10', 'WELCOME20', 'FLASH25', 'SPECIAL15', null];
   
   const mockData = [];
   
@@ -277,7 +292,22 @@ export const getMockPayments = (count = 150) => {
     const status = statuses[Math.floor(Math.random() * statuses.length)];
     const userIndex = Math.floor(Math.random() * names.length);
     const courseIndex = Math.floor(Math.random() * courses.length);
-    const amount = [99.99, 149.99, 79.99, 199.99, 49.99, 299.99][Math.floor(Math.random() * 6)];
+    
+    // Base price for the course
+    const basePrice = [99.99, 149.99, 79.99, 199.99, 49.99, 299.99][Math.floor(Math.random() * 6)];
+    
+    // Randomly apply a promo code (30% chance)
+    const hasPromo = Math.random() < 0.3;
+    let discountAmount = 0;
+    let promoCode = null;
+    let finalAmount = basePrice;
+    
+    if (hasPromo) {
+      const discountPercent = [10, 15, 20, 25][Math.floor(Math.random() * 4)];
+      discountAmount = parseFloat((basePrice * discountPercent / 100).toFixed(2));
+      finalAmount = basePrice - discountAmount;
+      promoCode = promoCodeTypes[Math.floor(Math.random() * (promoCodeTypes.length - 1))];
+    }
     
     const createdDate = new Date();
     createdDate.setDate(createdDate.getDate() - Math.floor(Math.random() * 30));
@@ -301,9 +331,13 @@ export const getMockPayments = (count = 150) => {
       course: {
         id: courseIndex + 1,
         title: courses[courseIndex],
-        price: amount
+        price: basePrice
       },
-      amount: amount,
+      // CRITICAL: Store both original and final amounts
+      amount: finalAmount,
+      original_amount: basePrice,
+      discount_amount: discountAmount,
+      promo_code: promoCode ? { code: promoCode, discount_value: discountAmount, discount_type: 'percentage' } : null,
       currency: 'USD',
       status: status,
       payment_method: 'bakong',
@@ -313,8 +347,18 @@ export const getMockPayments = (count = 150) => {
     });
   }
   
-  // Sort by created_at descending (newest first)
   return mockData.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+};
+
+// NEW: Fix payment amounts endpoint
+export const fixPaymentAmounts = async () => {
+  try {
+    const response = await api.post('/admin/payments/fix-amounts');
+    return response.data;
+  } catch (error) {
+    console.error('Error fixing payment amounts:', error);
+    throw error;
+  }
 };
 
 // Check if backend is available
@@ -343,9 +387,15 @@ export const testAdminPaymentsEndpoint = async () => {
     console.log('Is array:', Array.isArray(response.data));
     console.log('Data preview:', response.data);
     
+    // Check for discount fields
     if (response.data && response.data.payments) {
-      console.log('Payments array length:', response.data.payments.length);
-      console.log('Total records:', response.data.total);
+      const firstPayment = response.data.payments[0];
+      console.log('Payment fields:', {
+        amount: firstPayment.amount,
+        original_amount: firstPayment.original_amount,
+        discount_amount: firstPayment.discount_amount,
+        has_promo: !!firstPayment.promo_code
+      });
     }
     
     return {
@@ -366,5 +416,36 @@ export const testAdminPaymentsEndpoint = async () => {
       message: error.message,
       data: error.response?.data
     };
+  }
+};
+
+// NEW: Validate amount consistency across all payments
+export const validatePaymentAmounts = async () => {
+  try {
+    const payments = await getAllPayments();
+    
+    const issues = payments.filter(p => {
+      if (p.original_amount && p.discount_amount) {
+        const calculated = p.original_amount - p.discount_amount;
+        return Math.abs(p.amount - calculated) > 0.01;
+      }
+      return false;
+    });
+    
+    return {
+      total: payments.length,
+      issues: issues.length,
+      issueList: issues.map(p => ({
+        id: p.id,
+        transaction_id: p.transaction_id,
+        amount: p.amount,
+        original: p.original_amount,
+        discount: p.discount_amount,
+        calculated: p.original_amount - p.discount_amount
+      }))
+    };
+  } catch (error) {
+    console.error('Validation error:', error);
+    throw error;
   }
 };

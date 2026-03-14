@@ -1,3 +1,4 @@
+// src/components/Sidebar.jsx
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -10,8 +11,9 @@ const Sidebar = ({ isOpen, onClose }) => {
     { path: '/courses', icon: 'fas fa-book', label: 'Courses' },
     { path: '/users', icon: 'fas fa-users', label: 'Users' },
     { path: '/payments', icon: 'fas fa-credit-card', label: 'Payments' },
+    { path: '/promocodes', icon: 'fas fa-tags', label: 'Promo Codes' }, // Add this line
     { path: '/enrollments', icon: 'fas fa-graduation-cap', label: 'Enrollments' },
-    { path: '/backup', icon: 'fas fa-database', label: 'Backup & Restore' }, // Add this line
+    { path: '/backup', icon: 'fas fa-database', label: 'Backup & Restore' },
     { path: '/settings', icon: 'fas fa-cog', label: 'Settings' },
   ];
 
